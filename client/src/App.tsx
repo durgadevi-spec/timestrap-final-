@@ -1,0 +1,153 @@
+import { useState, useEffect } from 'react';
+import { Switch, Route, useLocation, Redirect } from 'wouter';
+import { queryClient } from './lib/queryClient';
+import { QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { Toaster } from '@/components/ui/toaster';
+import { TooltipProvider } from '@/components/ui/tooltip';
+import { SidebarProvider } from '@/components/ui/sidebar';
+import { AuthProvider, useAuth } from '@/context/AuthContext';
+import WelcomePage from '@/components/WelcomePage';
+import LoginCard from '@/components/LoginCard';
+import ForgotPasswordModal from '@/components/ForgotPasswordModal';
+import AppHeader from '@/components/AppHeader';
+import AppSidebar from '@/components/AppSidebar';
+import TrackerPage from '@/pages/TrackerPage';
+import ApprovalPage from '@/pages/ApprovalPage';
+import ReportsPage from '@/pages/ReportsPage';
+import OrganisationPage from '@/pages/OrganisationPage';
+import UsersPage from '@/pages/UsersPage';
+import AdminPage from '@/pages/AdminPage';
+import AnalyticsPage from '@/pages/AnalyticsPage';
+import NotFound from '@/pages/not-found';
+import type { TimeEntry } from '@shared/schema';
+
+function AuthenticatedApp() {
+  const { user, logout } = useAuth();
+  const [location, setLocation] = useLocation();
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  
+  const sidebarStyle = {
+    "--sidebar-width": "14rem",
+    "--sidebar-width-icon": "3.5rem",
+  };
+
+  // Fetch pending approvals count
+  const { data: timeEntries = [] } = useQuery<TimeEntry[]>({
+    queryKey: ['/api/time-entries'],
+    enabled: user?.role === 'manager' || user?.role === 'hr' || user?.role === 'admin',
+  });
+
+  const pendingCount = timeEntries.filter(e => e.status === 'pending').length;
+
+  if (!user) return null;
+
+  return (
+    <SidebarProvider 
+      style={sidebarStyle as React.CSSProperties}
+      defaultOpen={true}
+      open={sidebarOpen}
+      onOpenChange={setSidebarOpen}
+    >
+      <div className="flex h-screen w-full bg-slate-950">
+        <AppSidebar 
+          userRole={user.role} 
+          pendingApprovals={pendingCount} 
+          collapsed={!sidebarOpen}
+          onToggle={() => setSidebarOpen(!sidebarOpen)}
+        />
+        
+        <div className="flex flex-col flex-1 overflow-hidden">
+          <AppHeader 
+            user={user} 
+            onLogout={logout}
+            selectedDate={new Date()}
+            showDatePicker={location === '/tracker'}
+            onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
+          />
+          <main className="flex-1 overflow-auto bg-slate-950">
+            <Switch>
+              <Route path="/">
+                <Redirect to="/tracker" />
+              </Route>
+              <Route path="/tracker">
+                <TrackerPage user={user} />
+              </Route>
+              <Route path="/analytics">
+                <AnalyticsPage user={user} />
+              </Route>
+              {(user.role === 'manager' || user.role === 'hr' || user.role === 'admin') && (
+                <Route path="/approvals">
+                  <ApprovalPage user={user} />
+                </Route>
+              )}
+              <Route path="/reports">
+                <ReportsPage user={user} />
+              </Route>
+              {user.role === 'admin' && (
+                <>
+                  <Route path="/organisation">
+                    <OrganisationPage user={user} />
+                  </Route>
+                  <Route path="/users">
+                    <UsersPage user={user} />
+                  </Route>
+                  <Route path="/admin">
+                    <AdminPage user={user} />
+                  </Route>
+                </>
+              )}
+              <Route>
+                <Redirect to="/tracker" />
+              </Route>
+            </Switch>
+          </main>
+        </div>
+      </div>
+    </SidebarProvider>
+  );
+}
+
+function AppContent() {
+  const { isAuthenticated, login, isLoading } = useAuth();
+  const [showWelcome, setShowWelcome] = useState(true);
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
+
+  if (isAuthenticated) {
+    return <AuthenticatedApp />;
+  }
+
+  if (showWelcome) {
+    return (
+      <WelcomePage onComplete={() => setShowWelcome(false)} />
+    );
+  }
+
+  return (
+    <>
+      <LoginCard 
+        onLogin={login}
+        onForgotPassword={() => setShowForgotPassword(true)}
+        isLoading={isLoading}
+      />
+      <ForgotPasswordModal 
+        open={showForgotPassword} 
+        onClose={() => setShowForgotPassword(false)} 
+      />
+    </>
+  );
+}
+
+function App() {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
+        <AuthProvider>
+          <AppContent />
+          <Toaster />
+        </AuthProvider>
+      </TooltipProvider>
+    </QueryClientProvider>
+  );
+}
+
+export default App;

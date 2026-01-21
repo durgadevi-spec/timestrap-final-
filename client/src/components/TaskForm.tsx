@@ -1,0 +1,611 @@
+import { useState, useEffect } from 'react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
+import { Badge } from '@/components/ui/badge';
+import { Play, Square, Save, Clock, X, Check, Plus, Search } from 'lucide-react';
+import { useAuth } from '@/context/AuthContext';
+
+interface Task {
+  id?: string;
+  project: string;
+  title: string;
+  subTask?: string;
+  description: string;
+  problemAndIssues: string;
+  quantify: string;
+  achievements: string;
+  scopeOfImprovements: string;
+  toolsUsed: string[];
+  startTime: string;
+  endTime: string;
+  percentageComplete: number;
+  isRecording?: boolean;
+}
+
+interface TaskFormProps {
+  task?: Task;
+  onSave: (task: Task) => void;
+  onCancel: () => void;
+  existingTasks?: Task[];
+  user?: { role: string; employeeCode: string };
+}
+
+const TOOLS_LIST = [
+  'Airtable','Android Studio','Angular','App Store Connect','AWS','Azure',
+  'Bitbucket','BrowserStack','Calls/Phone','Canva','ChatGPT','Chrome',
+  'Claude','Confluence','CSS','Docker','Drizzle','Emails','ESLint',
+  'Excel','Express','Figma','Firebase','Firefox','Flutter','Gemini',
+  'Git','GitHub','GitLab','Google','Google Calendar','Google Keep',
+  'Google Play Console','Google Tasks','Grafana','GSAP','Heroku','HTML',
+  'InVision','JavaScript','Jenkins','Jest','Jira','Kubernetes','Loom',
+  'Lucide Icons','Meeting Others','Meeting with Teams','Miro','MongoDB',
+  'MS Office','MS Teams','MySQL','Netlify','Next.js','Node.js','Notes',
+  'Notion','OpenAI','Others','Outlook','PostgreSQL','Postman','PPT',
+  'Prettier','Prisma','React','Redis','Redux','Safari','Sentry',
+  'Shadcn/UI','Slack','Storybook','Supabase','Swift','Tailwind CSS',
+  'TanStack Query','Trello','TypeScript','Vercel','Vite','VS Code',
+  'Vue','Web Browser','Word','Wouter','XCode','Zapier','Zeplin',
+  'Zoho Books','Zoho Cliq','Zoho Expenses'
+].sort();
+
+/* ✅ NEW – project type (does NOT remove anything) */
+type Project = {
+  project_code: string;
+  project_name: string;
+};
+
+export default function TaskForm({ task, onSave, onCancel, user }: TaskFormProps) {
+  const { user: authUser } = useAuth();
+  const [formData, setFormData] = useState<Task>({
+    project: task?.project || '',
+    title: task?.title || '',
+    subTask: task?.subTask || '',
+    description: task?.description || '',
+    problemAndIssues: task?.problemAndIssues || '',
+    quantify: task?.quantify || '',
+    achievements: task?.achievements || '',
+    scopeOfImprovements: task?.scopeOfImprovements || '',
+    toolsUsed: task?.toolsUsed || [],
+    startTime: task?.startTime || '',
+    endTime: task?.endTime || '',
+    percentageComplete: task?.percentageComplete || 0,
+  });
+
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingStartTime, setRecordingStartTime] = useState<Date | null>(null);
+  const [elapsedTime, setElapsedTime] = useState(0);
+  const [errors, setErrors] = useState<string[]>([]);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [projectSearch, setProjectSearch] = useState('');
+  const [toolSearch, setToolSearch] = useState('');
+
+  /* ✅ UPDATED – always an array */
+  const [projects, setProjects] = useState<Project[]>([]);
+
+  /* ✅ ADDED – tasks state */
+  const [tasks, setTasks] = useState<{ id: string; task_name: string }[]>([]);
+
+  /* ✅ ADDED – subtasks state */
+  const [subtasks, setSubtasks] = useState<{ id: string; title: string }[]>([]);
+
+  /* ✅ SAFE FILTER (NO CRASH EVER) */
+  const filteredProjects = Array.isArray(projects)
+    ? projects.filter(p =>
+        p.project_name?.toLowerCase().includes(projectSearch.toLowerCase())
+      )
+    : [];
+
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (isRecording && recordingStartTime) {
+      interval = setInterval(() => {
+        setElapsedTime(
+          Math.floor((Date.now() - recordingStartTime.getTime()) / 1000)
+        );
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [isRecording, recordingStartTime]);
+
+  /* ✅ UPDATED – SAFE FETCH */
+  useEffect(() => {
+    async function fetchProjects() {
+      try {
+        const params = new URLSearchParams();
+        if (user?.role) params.append('userRole', user.role);
+        if (user?.employeeCode) params.append('userEmpCode', user.employeeCode);
+        if (authUser?.department) params.append('userDepartment', authUser.department);
+        const url = `/api/projects${params.toString() ? '?' + params.toString() : ''}`;
+        const res = await fetch(url);
+        const json = await res.json();
+
+        if (Array.isArray(json)) {
+          setProjects(json);
+        } else if (Array.isArray(json?.data)) {
+          setProjects(json.data);
+        } else {
+          setProjects([]);
+        }
+      } catch (err) {
+        console.error('Failed to fetch projects:', err);
+        setProjects([]);
+      }
+    }
+    fetchProjects();
+  }, [user]);
+
+  /* ✅ ADDED – fetch tasks when project changes */
+  useEffect(() => {
+    async function fetchTasks() {
+      if (!formData.project) {
+        setTasks([]);
+        return;
+      }
+
+      try {
+        // Find the project_code from the selected project name
+        const selectedProject = projects.find(p => p.project_name === formData.project);
+        if (!selectedProject) {
+          setTasks([]);
+          return;
+        }
+
+        const params = new URLSearchParams();
+        params.append('projectId', selectedProject.project_code);
+        if (authUser?.department) params.append('userDepartment', authUser.department);
+        const res = await fetch(`/api/tasks?${params.toString()}`);
+        const json = await res.json();
+
+        if (Array.isArray(json)) {
+          setTasks(json);
+        } else {
+          setTasks([]);
+        }
+      } catch (err) {
+        console.error('Failed to fetch tasks:', err);
+        setTasks([]);
+      }
+    }
+    fetchTasks();
+  }, [formData.project, projects]);
+
+  useEffect(() => {
+    async function fetchSubtasks() {
+      if (!formData.title) {
+        setSubtasks([]);
+        return;
+      }
+
+      try {
+        // Find the task_id from the selected task name
+        const selectedTask = tasks.find(t => t.task_name === formData.title);
+        if (!selectedTask) {
+          setSubtasks([]);
+          return;
+        }
+
+        const params = new URLSearchParams();
+        params.append('taskId', selectedTask.id);
+        if (authUser?.department) params.append('userDepartment', authUser.department);
+        const res = await fetch(`/api/subtasks?${params.toString()}`);
+        const json = await res.json();
+
+        if (Array.isArray(json)) {
+          setSubtasks(json);
+        } else {
+          setSubtasks([]);
+        }
+      } catch (err) {
+        console.error('Failed to fetch subtasks:', err);
+        setSubtasks([]);
+      }
+    }
+    fetchSubtasks();
+  }, [formData.title, tasks]);
+
+  const getCurrentISTTime = () => {
+    const now = new Date();
+    const istOffset = 5.5 * 60 * 60 * 1000;
+    return new Date(now.getTime() + istOffset).toISOString().slice(11, 16);
+  };
+
+  const formatElapsedTime = (seconds: number) => {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const startRecording = () => {
+    setIsRecording(true);
+    setRecordingStartTime(new Date());
+    setFormData({ ...formData, startTime: getCurrentISTTime() });
+  };
+
+  const stopRecording = () => {
+    setIsRecording(false);
+    setFormData({ ...formData, endTime: getCurrentISTTime() });
+  };
+
+  const toggleTool = (tool: string) => {
+    setFormData({
+      ...formData,
+      toolsUsed: formData.toolsUsed.includes(tool)
+        ? formData.toolsUsed.filter(t => t !== tool)
+        : [...formData.toolsUsed, tool],
+    });
+  };
+
+  const validateForm = () => {
+    const errs: string[] = [];
+    if (!formData.project) errs.push('Project is required');
+    if (!formData.title) errs.push('Task is required');
+    if (!formData.subTask) errs.push('Sub Task is required');
+    if (!formData.quantify) errs.push('Quantify is required');
+    if (!formData.startTime) errs.push('Start time is required');
+    if (!formData.endTime) errs.push('End time is required');
+    if (formData.toolsUsed.length === 0) errs.push('At least one tool must be selected');
+    setErrors(errs);
+    return errs.length === 0;
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isSubmitting) return;
+    if (!validateForm()) return;
+    setIsSubmitting(true);
+    onSave(formData);
+  };
+
+  return (
+    <Card className="bg-slate-800/50 border-blue-500/20">
+      <CardHeader className="pb-4">
+        <CardTitle className="text-lg text-white flex items-center justify-between gap-2 flex-wrap">
+          <span>{task?.id ? 'Edit Task' : 'Add New Task'}</span>
+          
+          <div className="flex items-center gap-2">
+            {isRecording ? (
+              <>
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-red-500/20 rounded-md border border-red-500/30">
+                  <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+                  <span className="text-red-400 font-mono text-sm">{formatElapsedTime(elapsedTime)}</span>
+                </div>
+                <Button 
+                  size="sm" 
+                  variant="destructive" 
+                  onClick={stopRecording}
+                  data-testid="button-stop-recording"
+                >
+                  <Square className="w-4 h-4 mr-2" />
+                  Stop
+                </Button>
+              </>
+            ) : (
+              <Button 
+                size="sm" 
+                onClick={startRecording}
+                className="bg-green-600 hover:bg-green-500"
+                data-testid="button-start-recording"
+              >
+                <Play className="w-4 h-4 mr-2" />
+                Start Recording
+              </Button>
+            )}
+          </div>
+        </CardTitle>
+      </CardHeader>
+      
+      <CardContent>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          {errors.length > 0 && (
+            <div className="p-3 rounded-md bg-red-500/10 border border-red-500/20">
+              {errors.map((error, i) => (
+                <p key={i} className="text-sm text-red-400">{error}</p>
+              ))}
+            </div>
+          )}
+          
+          <div className="space-y-2">
+            <Label htmlFor="project" className="text-blue-100">Project *</Label>
+            <Select 
+              value={formData.project} 
+              onValueChange={(v) => setFormData({ ...formData, project: v, title: '', subTask: '' })}
+            >
+              <SelectTrigger className="bg-slate-700/50 border-blue-500/20 text-white" data-testid="select-project">
+                <SelectValue placeholder="Select a project" />
+              </SelectTrigger>
+              <SelectContent className="max-h-[300px]">
+                <div className="flex items-center px-3 pb-2 pt-1 border-b border-blue-500/10">
+                  <Search className="w-3.5 h-3.5 text-blue-400/50 mr-2" />
+                  <input 
+                    className="flex-1 bg-transparent border-none outline-none text-xs text-white placeholder:text-blue-400/30"
+                    placeholder="Search projects..."
+                    value={projectSearch}
+                    onChange={(e) => setProjectSearch(e.target.value)}
+                    onKeyDown={(e) => e.stopPropagation()}
+                  />
+                </div>
+                {filteredProjects.length > 0 ? (
+                  filteredProjects.map(p => (
+                    <SelectItem key={p.project_code} value={p.project_name}>{p.project_name}</SelectItem>
+                  ))
+                ) : (
+                  <div className="py-2 px-8 text-xs text-blue-400/40 italic">No projects found</div>
+                )}
+              </SelectContent>
+            </Select>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="title" className="text-blue-100">Task *</Label>
+              <Select 
+                value={formData.title} 
+                onValueChange={(v) => setFormData({ ...formData, title: v, subTask: '' })}
+              >
+                <SelectTrigger className="bg-slate-700/50 border-blue-500/20 text-white" data-testid="select-task">
+                  <SelectValue placeholder="Select a task" />
+                </SelectTrigger>
+                <SelectContent className="max-h-[200px]">
+                  {tasks.length > 0 ? (
+                    tasks.map(task => (
+                      <SelectItem key={task.id} value={task.task_name}>{task.task_name}</SelectItem>
+                    ))
+                  ) : (
+                    <div className="py-2 px-8 text-xs text-blue-400/40 italic">
+                      {formData.project ? 'No tasks available for this project' : 'Select a project first'}
+                    </div>
+                  )}
+                </SelectContent>
+              </Select>
+            </div>
+            
+            <div className="space-y-2">
+              <Label htmlFor="subTask" className="text-blue-100">Sub Task *</Label>
+              <Select
+                value={formData.subTask}
+                onValueChange={(value) => setFormData({ ...formData, subTask: value })}
+                data-testid="select-subtask"
+              >
+                <SelectTrigger className="bg-slate-700/50 border-blue-500/20 text-white">
+                  <SelectValue placeholder="Select a sub task" />
+                </SelectTrigger>
+                <SelectContent className="bg-slate-800 border-blue-500/20">
+                  {subtasks.length > 0 ? (
+                    subtasks.map((subtask) => (
+                      <SelectItem key={subtask.id} value={subtask.title}>{subtask.title}</SelectItem>
+                    ))
+                  ) : (
+                    <div className="py-2 px-8 text-xs text-blue-400/40 italic">
+                      {formData.title ? 'No subtasks available for this task' : 'Select a task first'}
+                    </div>
+                  )}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="quantify" className="text-blue-100">Quantify Your Result *</Label>
+              <Input
+                id="quantify"
+                placeholder="Enter quantify (e.g., 5 reports, 10 calls)"
+                value={formData.quantify}
+                onChange={(e) => setFormData({ ...formData, quantify: e.target.value })}
+                className="bg-slate-700/50 border-blue-500/20 text-white"
+                data-testid="input-quantify"
+              />
+            </div>
+            
+            <div className="space-y-2">
+              <Label htmlFor="achievements" className="text-blue-100">Achievements</Label>
+              <Input
+                id="achievements"
+                placeholder="What did you accomplish?"
+                value={formData.achievements}
+                onChange={(e) => setFormData({ ...formData, achievements: e.target.value })}
+                className="bg-slate-700/50 border-blue-500/20 text-white"
+                data-testid="input-achievements"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="problemAndIssues" className="text-blue-100">Problems & Issues</Label>
+              <Input
+                id="problemAndIssues"
+                placeholder="Enter any problems or issues faced"
+                value={formData.problemAndIssues}
+                onChange={(e) => setFormData({ ...formData, problemAndIssues: e.target.value })}
+                className="bg-slate-700/50 border-blue-500/20 text-white"
+                data-testid="input-problem-issues"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="scopeOfImprovements" className="text-blue-100">Scope of Improvements</Label>
+              <Input
+                id="scopeOfImprovements"
+                placeholder="Areas for improvement"
+                value={formData.scopeOfImprovements}
+                onChange={(e) => setFormData({ ...formData, scopeOfImprovements: e.target.value })}
+                className="bg-slate-700/50 border-blue-500/20 text-white"
+                data-testid="input-scope-improvements"
+              />
+            </div>
+          </div>
+          
+          <div className="space-y-2">
+            <Label htmlFor="description" className="text-blue-100">
+              Description <span className="text-blue-400/60 text-xs">(optional, max 35 words)</span>
+            </Label>
+            <Textarea
+              id="description"
+              placeholder="Describe the task (optional, max 35 words)..."
+              value={formData.description}
+              onChange={(e) => {
+                const words = e.target.value.trim().split(/\s+/).filter(w => w.length > 0);
+                if (words.length <= 35) {
+                  setFormData({ ...formData, description: e.target.value });
+                }
+              }}
+              className="bg-slate-700/50 border-blue-500/20 text-white resize-none"
+              rows={3}
+              data-testid="input-description"
+            />
+            <p className="text-xs text-blue-400/60">
+              {formData.description.trim().split(/\s+/).filter(w => w.length > 0).length}/35 words
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="startTime" className="text-blue-100">Start Time (IST) *</Label>
+              <div className="relative">
+                <Clock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-blue-400" />
+                <Input
+                  id="startTime"
+                  type="time"
+                  value={formData.startTime}
+                  onChange={(e) => setFormData({ ...formData, startTime: e.target.value })}
+                  className="pl-10 bg-slate-700/50 border-blue-500/20 text-white"
+                  data-testid="input-start-time"
+                />
+              </div>
+            </div>
+            
+            <div className="space-y-2">
+              <Label htmlFor="endTime" className="text-blue-100">End Time (IST) *</Label>
+              <div className="relative">
+                <Clock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-blue-400" />
+                <Input
+                  id="endTime"
+                  type="time"
+                  value={formData.endTime}
+                  onChange={(e) => setFormData({ ...formData, endTime: e.target.value })}
+                  className="pl-10 bg-slate-700/50 border-blue-500/20 text-white"
+                  data-testid="input-end-time"
+                />
+              </div>
+            </div>
+            
+            <div className="space-y-2">
+              <Label htmlFor="percentage" className="text-blue-100">Completion %</Label>
+              <div className="flex items-center space-x-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setFormData({ ...formData, percentageComplete: Math.max(0, formData.percentageComplete - 10) })}
+                  className="bg-slate-700/50 border-blue-500/20 text-white hover:bg-slate-600/50"
+                  data-testid="btn-decrease-percentage"
+                >
+                  -
+                </Button>
+                <Input
+                  id="percentage"
+                  type="number"
+                  min="0"
+                  max="100"
+                  value={formData.percentageComplete}
+                  onChange={(e) => setFormData({ ...formData, percentageComplete: Math.min(100, Math.max(0, parseInt(e.target.value) || 0)) })}
+                  className="bg-slate-700/50 border-blue-500/20 text-white text-center"
+                  data-testid="input-percentage"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setFormData({ ...formData, percentageComplete: Math.min(100, formData.percentageComplete + 10) })}
+                  className="bg-slate-700/50 border-blue-500/20 text-white hover:bg-slate-600/50"
+                  data-testid="btn-increase-percentage"
+                >
+                  +
+                </Button>
+              </div>
+            </div>
+          </div>
+          
+          <div className="space-y-2">
+            <Label className="text-blue-100">Tools Used</Label>
+            <Command className="bg-slate-700/30 border border-blue-500/10 rounded-md">
+              <CommandInput
+                placeholder="Search tools..."
+                value={toolSearch}
+                onValueChange={setToolSearch}
+                className="bg-transparent border-none text-white placeholder:text-slate-400"
+                data-testid="input-tool-search"
+              />
+              <CommandList className="max-h-40">
+                <CommandEmpty className="text-slate-400 p-2">No tools found.</CommandEmpty>
+                <CommandGroup>
+                  {TOOLS_LIST.filter(tool =>
+                    tool.toLowerCase().includes(toolSearch.toLowerCase())
+                  ).map(tool => (
+                    <CommandItem
+                      key={tool}
+                      onSelect={() => toggleTool(tool)}
+                      className={`cursor-pointer ${
+                        formData.toolsUsed.includes(tool)
+                          ? 'bg-blue-500/20 text-blue-300'
+                          : 'text-slate-300 hover:bg-slate-600/50'
+                      }`}
+                      data-testid={`command-tool-${tool.toLowerCase().replace(/\s+/g, '-')}`}
+                    >
+                      <Check className={`w-4 h-4 mr-2 ${formData.toolsUsed.includes(tool) ? 'opacity-100' : 'opacity-0'}`} />
+                      {tool}
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              </CommandList>
+            </Command>
+            {formData.toolsUsed.length > 0 && (
+              <div className="flex flex-wrap gap-2 mt-2">
+                {formData.toolsUsed.map(tool => (
+                  <Badge
+                    key={tool}
+                    variant="outline"
+                    className="bg-blue-500/20 text-blue-300 border-blue-500/50"
+                    onClick={() => toggleTool(tool)}
+                    data-testid={`badge-selected-tool-${tool.toLowerCase().replace(/\s+/g, '-')}`}
+                  >
+                    {tool}
+                    <X className="w-3 h-3 ml-1" />
+                  </Badge>
+                ))}
+              </div>
+            )}
+          </div>
+          
+          <div className="flex justify-end gap-3 pt-4">
+            <Button 
+              type="button" 
+              variant="outline" 
+              onClick={onCancel}
+              className="border-slate-600 text-slate-300"
+              data-testid="button-cancel"
+            >
+              <X className="w-4 h-4 mr-2" />
+              Cancel
+            </Button>
+            <Button 
+              type="submit"
+              className="bg-gradient-to-r from-blue-600 to-cyan-600"
+              data-testid="button-save-task"
+            >
+              <Save className="w-4 h-4 mr-2" />
+              Save Task
+            </Button>
+          </div>
+        </form>
+      </CardContent>
+    </Card>
+  );
+}

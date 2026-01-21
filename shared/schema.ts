@@ -1,0 +1,218 @@
+import { sql } from "drizzle-orm";
+import {
+  pgTable,
+  text,
+  varchar,
+  timestamp,
+  boolean,
+  integer,
+} from "drizzle-orm/pg-core";
+import { createInsertSchema } from "drizzle-zod";
+import { z } from "zod";
+
+/* -------------------------------------------------------------------------- */
+/*                               Organisations                                 */
+/* -------------------------------------------------------------------------- */
+export const organisations = pgTable("organisations", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  gstId: text("gst_id").notNull(),
+  mainAddress: text("main_address").notNull(),
+  branchAddress: text("branch_address"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertOrganisationSchema = createInsertSchema(organisations).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertOrganisation = z.infer<typeof insertOrganisationSchema>;
+export type Organisation = typeof organisations.$inferSelect;
+
+/* -------------------------------------------------------------------------- */
+/*                               Departments                                   */
+/* -------------------------------------------------------------------------- */
+export const departments = pgTable("departments", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  code: text("code").notNull().unique(),
+  leader: text("leader"),
+  parentDepartmentId: varchar("parent_department_id"),
+  organisationId: varchar("organisation_id"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertDepartmentSchema = createInsertSchema(departments).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertDepartment = z.infer<typeof insertDepartmentSchema>;
+export type Department = typeof departments.$inferSelect;
+
+/* -------------------------------------------------------------------------- */
+/*                                   Groups                                    */
+/* -------------------------------------------------------------------------- */
+export const groups = pgTable("groups", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  parentDepartment: text("parent_department").notNull(),
+  groupLeader: text("group_leader"),
+  organisationId: varchar("organisation_id"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertGroupSchema = createInsertSchema(groups).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertGroup = z.infer<typeof insertGroupSchema>;
+export type Group = typeof groups.$inferSelect;
+
+/* -------------------------------------------------------------------------- */
+/*                                  Employees                                  */
+/* -------------------------------------------------------------------------- */
+export const employees = pgTable("employees", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  employeeCode: text("employee_code").notNull().unique(),
+  name: text("name").notNull(),
+  email: text("email"),
+  password: text("password").notNull(),
+  role: text("role").notNull().default("employee"),
+  department: text("department"),
+  groupName: text("group_name"),
+  lineManagerId: varchar("line_manager_id"),
+  organisationId: varchar("organisation_id"),
+  isActive: boolean("is_active").default(true).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertEmployeeSchema = createInsertSchema(employees).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertEmployee = z.infer<typeof insertEmployeeSchema>;
+export type Employee = typeof employees.$inferSelect;
+
+/* -------------------------------------------------------------------------- */
+/*                                Projects                                     */
+/* -------------------------------------------------------------------------- */
+export const projects = pgTable("projects", {
+  project_code: text("project_code").primaryKey(),
+  project_name: text("project_name").notNull(),
+  description: text("description"),
+  status: text("status"),
+  start_date: text("start_date"),
+  end_date: text("end_date"),
+});
+
+export type Project = typeof projects.$inferSelect;
+
+/* -------------------------------------------------------------------------- */
+/*                                  Tasks                                      */
+/* -------------------------------------------------------------------------- */
+export const tasks = pgTable("tasks", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  project_code: text("project_code").notNull(),
+  task_name: text("task_name").notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export type Task = typeof tasks.$inferSelect;
+
+/* -------------------------------------------------------------------------- */
+/*                                 Subtasks                                    */
+/* -------------------------------------------------------------------------- */
+export const subtasks = pgTable("subtasks", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  task_id: varchar("task_id").notNull(),
+  subtask_name: text("subtask_name").notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export type Subtask = typeof subtasks.$inferSelect;
+
+/* -------------------------------------------------------------------------- */
+/*                                Time Entries                                 */
+/* -------------------------------------------------------------------------- */
+export const timeEntries = pgTable("time_entries", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  employeeId: varchar("employee_id").notNull(),
+  employeeCode: text("employee_code").notNull(),
+  employeeName: text("employee_name").notNull(),
+  date: text("date").notNull(),
+  projectName: text("project_name").notNull(),
+  taskDescription: text("task_description").notNull(),
+  problemAndIssues: text("problem_and_issues"),
+  quantify: text("quantify").notNull(),
+  achievements: text("achievements"),
+  scopeOfImprovements: text("scope_of_improvements"),
+  toolsUsed: text("tools_used").array(),
+  startTime: text("start_time").notNull(),
+  endTime: text("end_time").notNull(),
+  totalHours: text("total_hours").notNull(),
+  percentageComplete: integer("percentage_complete").default(0),
+  status: text("status").default("pending"),
+  approvedBy: varchar("approved_by"),
+  approvedAt: timestamp("approved_at"),
+  managerApprovedBy: varchar("manager_approved_by"),
+  managerApprovedAt: timestamp("manager_approved_at"),
+  rejectionReason: text("rejection_reason"),
+  approvalComment: text("approval_comment"),
+  submittedAt: timestamp("submitted_at").defaultNow().notNull(),
+});
+
+export const insertTimeEntrySchema = createInsertSchema(timeEntries).omit({
+  id: true,
+  submittedAt: true,
+});
+export type InsertTimeEntry = z.infer<typeof insertTimeEntrySchema>;
+export type TimeEntry = typeof timeEntries.$inferSelect;
+
+// Extended type for time entries with approval information
+export type ExtendedTimeEntry = TimeEntry & {
+  approvedBy?: string | null;
+  approvedAt?: Date | null;
+  managerApprovedBy?: string | null;
+  managerApprovedAt?: Date | null;
+  rejectionReason?: string | null;
+  approvalComment?: string | null;
+};
+
+/* -------------------------------------------------------------------------- */
+/*                                  Managers                                   */
+/* -------------------------------------------------------------------------- */
+export const managers = pgTable("managers", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  employeeCode: text("employee_code").notNull().unique(),
+  email: text("email"),
+  department: text("department"),
+});
+
+export const insertManagerSchema = createInsertSchema(managers).omit({
+  id: true,
+});
+export type InsertManager = z.infer<typeof insertManagerSchema>;
+export type Manager = typeof managers.$inferSelect;
+
+/* -------------------------------------------------------------------------- */
+/*                             Dropdown Options                                 */
+/* -------------------------------------------------------------------------- */
+export const DEPARTMENT_OPTIONS = [
+  "Software",
+  "Finance",
+  "Purchase",
+  "HR",
+  "Admin",
+  "IT Support",
+  "Engineering",
+  "Employee",
+  "Others",
+] as const;
+
+export const PROJECT_OPTIONS = [
+  "BOQ Project",
+  "Timestrap Project",
+  "HRMS Application",
+  "PMS Application",
+] as const;
