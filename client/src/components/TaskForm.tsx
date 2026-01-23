@@ -245,7 +245,6 @@ export default function TaskForm({ task, onSave, onCancel, user }: TaskFormProps
     const errs: string[] = [];
     if (!formData.project) errs.push('Project is required');
     if (!formData.title) errs.push('Task is required');
-    if (!formData.subTask) errs.push('Sub Task is required');
     if (!formData.quantify) errs.push('Quantify is required');
     if (!formData.startTime) errs.push('Start time is required');
     if (!formData.endTime) errs.push('End time is required');
@@ -366,7 +365,7 @@ export default function TaskForm({ task, onSave, onCancel, user }: TaskFormProps
             </div>
             
             <div className="space-y-2">
-              <Label htmlFor="subTask" className="text-blue-100">Sub Task *</Label>
+              <Label htmlFor="subTask" className="text-blue-100">Sub Task</Label>
               <Select
                 value={formData.subTask}
                 onValueChange={(value) => setFormData({ ...formData, subTask: value })}
