@@ -1,9 +1,14 @@
-import { createClient } from "@supabase/supabase-js";
+import { Pool, QueryResult } from "pg";
 
-const supabaseUrl = process.env.SUPABASE_URL!;
-const supabaseKey = process.env.SUPABASE_SERVICE_KEY!;
+// Initialize Neon PostgreSQL connection pool for PMS database
+const pmsDatabaseUrl = process.env.PMS_DATABASE_URL || process.env.DATABASE_URL!;
 
-export const supabase = createClient(supabaseUrl, supabaseKey);
+export const pmsPool = new Pool({
+  connectionString: pmsDatabaseUrl,
+  ssl: {
+    rejectUnauthorized: false
+  }
+});
 
 // PMS Project interface matching Supabase schema
 export interface PMSProject {
@@ -95,71 +100,52 @@ export const getProjects = async (userRole?: string, userEmpCode?: string, userD
   try {
     console.log("🔍 PMS getProjects called with:", { userRole, userEmpCode, userDepartment });
 
-    // For now, fetch all projects since roles aren't implemented in PMS yet
-    // Later this can be enhanced with role-based filtering
-    let query = supabase
-      .from("Projects")
-      .select("*")
-      .order("project_name");
+    console.log("📡 Executing PMS query to fetch Projects with departments...");
 
-    console.log("📡 Executing PMS query...");
+    // Query Neon PostgreSQL directly - get all projects
+    const projectsResult: QueryResult = await pmsPool.query(`
+      SELECT 
+        p.id,
+        p.title as project_name,
+        p.project_code,
+        p.client_name,
+        p.description,
+        p.status,
+        p.start_date,
+        p.end_date,
+        p.progress as progress_percentage,
+        p.created_at,
+        p.updated_at
+      FROM projects p
+      ORDER BY p.title
+    `);
 
-    // If user department is provided, try to filter projects by department
-    // Try multiple possible column names and approaches
-    if (userDepartment) {
-      console.log("🏢 Attempting to filter by department:", userDepartment);
+    const projects = projectsResult.rows as PMSProject[] || [];
 
-      // If user is admin, don't filter by department - they should see all projects
-      if (userRole === 'admin') {
-        console.log("👑 User is admin, returning all projects");
-      } else {
-        // For non-admin users, skip database filtering and rely on client-side filtering
-        // This ensures we get all projects first, then filter by department matching
-        console.log("👤 Non-admin user, will apply client-side department filtering");
+    // Get all department assignments
+    const deptResult: QueryResult = await pmsPool.query(`
+      SELECT project_id, department FROM project_departments
+    `);
+
+    // Map departments to projects
+    const projectDepts: Record<string, string[]> = {};
+    deptResult.rows.forEach((row: any) => {
+      const projId = row.project_id;
+      if (!projectDepts[projId]) {
+        projectDepts[projId] = [];
       }
-    }
+      projectDepts[projId].push(row.department);
+    });
 
-    const { data, error } = await query;
-    if (error) {
-      console.error("❌ PMS 'Projects' table error:", error.message);
-      console.error("❌ Full error:", error);
+    // Enrich projects with their departments
+    const enrichedProjects = projects.map(p => ({
+      ...p,
+      department: projectDepts[p.id as any] || []
+    }));
 
-      // Try alternative table names
-      console.log("🔄 Trying alternative table names...");
-
-      const alternativeTables = ['projects', 'Project', 'project', 'tbl_projects', 'tbl_project', 'pms_projects'];
-      for (const tableName of alternativeTables) {
-        try {
-          console.log(`📡 Trying table: ${tableName}`);
-          const { data: altData, error: altError } = await supabase
-            .from(tableName)
-            .select("*")
-            .order("project_name")
-            .limit(10);
-
-          if (!altError && altData) {
-            console.log(`✅ Found ${altData.length} projects in table '${tableName}'`);
-            if (altData.length > 0) {
-              console.log("📋 Sample:", altData[0]);
-              console.log("📋 All columns:", Object.keys(altData[0]));
-              return altData;
-            }
-          } else if (altError) {
-            console.log(`❌ Table '${tableName}' error: ${altError.message}`);
-          }
-        } catch (altErr) {
-          console.log(`💥 Exception checking table '${tableName}': ${(altErr as Error).message}`);
-        }
-      }
-
-      return []; // Return empty array if no table works
-    }
-
-    let projects = data || [];
-    console.log(`📊 PMS projects returned: ${projects.length} projects`);
-    if (projects.length > 0) {
-      console.log("📋 First project sample:", projects[0]);
-      console.log("📋 Available columns:", Object.keys(projects[0]));
+    console.log(`📊 PMS projects returned: ${enrichedProjects.length} projects`);
+    if (enrichedProjects.length > 0) {
+      console.log("📋 First project sample:", JSON.stringify(enrichedProjects[0], null, 2));
     } else {
       console.log("⚠️ No projects found in PMS database");
     }
@@ -167,7 +153,7 @@ export const getProjects = async (userRole?: string, userEmpCode?: string, userD
     // Apply client-side department filtering if user has department (including admins)
     if (userDepartment) {
       console.log("🔄 Applying client-side department filtering for:", userDepartment);
-      const filteredProjects = projects.filter(project => {
+      const filteredProjects = enrichedProjects.filter(project => {
         // Handle multiple possible department field names and formats
         let projectDepts: string[] = [];
 
@@ -195,21 +181,23 @@ export const getProjects = async (userRole?: string, userEmpCode?: string, userD
         }
 
         if (projectDepts.length === 0) {
-          console.log(`⚠️ Project ${project.project_name} has no department field`);
+          console.log(`⚠️ Project ${project.project_name} has no department assigned`);
           return false; // Exclude projects without department
         }
 
         // Check if user's department matches any of the project's departments
         const isMatch = projectDepts.some(dept => isDepartmentMatch(userDepartment, dept));
-        console.log(`🔍 Project "${project.project_name}" depts [${projectDepts.join(', ')}] matches "${userDepartment}": ${isMatch}`);
+        if (isMatch) {
+          console.log(`✅ Project "${project.project_name}" depts [${projectDepts.join(', ')}] matches "${userDepartment}"`);
+        }
         return isMatch;
       });
 
-      console.log(`📊 After department filtering: ${filteredProjects.length} projects (from ${projects.length})`);
-      projects = filteredProjects;
+      console.log(`📊 After department filtering: ${filteredProjects.length} projects (from ${enrichedProjects.length})`);
+      return filteredProjects;
     }
 
-    return projects;
+    return enrichedProjects;
   } catch (error) {
     console.error("💥 Error connecting to PMS:", error);
     return []; // Return empty array on connection issues
@@ -218,58 +206,28 @@ export const getProjects = async (userRole?: string, userEmpCode?: string, userD
 
 export const getTasks = async (projectId?: string, userDepartment?: string): Promise<PMSTask[]> => {
   try {
-    let query = supabase
-      .from("project_tasks")
-      .select("*")
-      .order("task_name");
-
-    if (projectId) {
-      query = query.eq("project_id", projectId);
-    }
-
     console.log("📡 Executing PMS getTasks query for project:", projectId);
 
-    const { data, error } = await query;
-    if (error) {
-      console.error("❌ PMS 'project_tasks' table error:", error.message);
-      console.error("❌ Full error:", error);
+    let query = 'SELECT * FROM project_tasks ORDER BY task_name';
+    const params: any[] = [];
 
-      // Try alternative table names
-      console.log("🔄 Trying alternative task table names...");
-
-      const alternativeTables = ['tasks', 'Task', 'task', 'tbl_tasks', 'tbl_task', 'pms_tasks'];
-      for (const tableName of alternativeTables) {
-        try {
-          console.log(`📡 Trying table: ${tableName}`);
-          const { data: altData, error: altError } = await supabase
-            .from(tableName)
-            .select("*")
-            .order("task_name")
-            .limit(10);
-
-          if (!altError && altData) {
-            console.log(`✅ Found ${altData.length} tasks in table '${tableName}'`);
-            if (altData.length > 0) {
-              console.log("📋 Sample:", altData[0]);
-              console.log("📋 All columns:", Object.keys(altData[0]));
-              return altData;
-            }
-          } else if (altError) {
-            console.log(`❌ Table '${tableName}' error: ${altError.message}`);
-          }
-        } catch (altErr) {
-          console.log(`💥 Exception checking table '${tableName}': ${(altErr as Error).message}`);
-        }
-      }
-
-      return []; // Return empty array if no table works
+    if (projectId) {
+      // projectId is actually the project_code, need to join with projects table
+      query = `
+        SELECT pt.* FROM project_tasks pt
+        INNER JOIN projects p ON pt.project_id = p.id
+        WHERE p.project_code = $1
+        ORDER BY pt.task_name
+      `;
+      params.push(projectId);
     }
 
-    let tasks = data || [];
+    const result: QueryResult = await pmsPool.query(query, params);
+    let tasks = result.rows as PMSTask[] || [];
+    
     console.log(`📊 PMS tasks returned: ${tasks.length} tasks`);
     if (tasks.length > 0) {
-      console.log("📋 First task sample:", tasks[0]);
-      console.log("📋 Available columns:", Object.keys(tasks[0]));
+      console.log("📋 First task sample:", JSON.stringify(tasks[0], null, 2));
     } else {
       console.log("⚠️ No tasks found in PMS database");
     }
@@ -285,56 +243,21 @@ export const getTasksByProject = async (projectId: string, userDepartment?: stri
   try {
     console.log("🔍 PMS getTasksByProject called with projectId:", projectId);
 
-    let query = supabase
-      .from("project_tasks")
-      .select("*")
-      .eq("project_id", projectId)
-      .order("task_name");
-
     console.log("📡 Executing PMS getTasksByProject query...");
 
-    const { data, error } = await query;
-    if (error) {
-      console.error("❌ PMS 'project_tasks' table error:", error.message);
-      console.error("❌ Full error:", error);
+    // projectId is the project_code, need to join with projects table
+    const result: QueryResult = await pmsPool.query(
+      `SELECT pt.* FROM project_tasks pt
+       INNER JOIN projects p ON pt.project_id = p.id
+       WHERE p.project_code = $1
+       ORDER BY pt.task_name`,
+      [projectId]
+    );
 
-      // Try alternative table names
-      console.log("🔄 Trying alternative task table names...");
-
-      const alternativeTables = ['tasks', 'Task', 'task', 'tbl_tasks', 'tbl_task', 'pms_tasks'];
-      for (const tableName of alternativeTables) {
-        try {
-          console.log(`📡 Trying table: ${tableName}`);
-          const { data: altData, error: altError } = await supabase
-            .from(tableName)
-            .select("*")
-            .eq("project_id", projectId)
-            .order("task_name")
-            .limit(10);
-
-          if (!altError && altData) {
-            console.log(`✅ Found ${altData.length} tasks in table '${tableName}' for project ${projectId}`);
-            if (altData.length > 0) {
-              console.log("📋 Sample:", altData[0]);
-              console.log("📋 All columns:", Object.keys(altData[0]));
-              return altData;
-            }
-          } else if (altError) {
-            console.log(`❌ Table '${tableName}' error: ${altError.message}`);
-          }
-        } catch (altErr) {
-          console.log(`💥 Exception checking table '${tableName}': ${(altErr as Error).message}`);
-        }
-      }
-
-      return []; // Return empty array if no table works
-    }
-
-    let tasks = data || [];
+    let tasks = result.rows as PMSTask[] || [];
     console.log(`📊 PMS tasks returned for project ${projectId}: ${tasks.length} tasks`);
     if (tasks.length > 0) {
-      console.log("📋 First task sample:", tasks[0]);
-      console.log("📋 Available columns:", Object.keys(tasks[0]));
+      console.log("📋 First task sample:", JSON.stringify(tasks[0], null, 2));
     } else {
       console.log(`⚠️ No tasks found in PMS database for project ${projectId}`);
     }
@@ -350,40 +273,31 @@ export const getSubtasks = async (taskId?: string, userDepartment?: string): Pro
   try {
     console.log("🔍 PMS getSubtasks called with taskId:", taskId, "userDepartment:", userDepartment);
 
-    let query = supabase
-      .from("subtasks")
-      .select("*")
-      .order("created_at");
-
-    // Don't filter by taskId in query - fetch all and filter client-side
     console.log("📡 Executing PMS getSubtasks query (fetching all subtasks)...");
 
-    const { data, error } = await query;
-    if (error) {
-      console.error("❌ PMS 'subtasks' table error:", error.message);
-      console.error("❌ Full error:", error);
-      return [];
-    }
+    const result: QueryResult = await pmsPool.query(
+      'SELECT * FROM subtasks ORDER BY created_at'
+    );
 
-    let subtasks = data || [];
+    let subtasks = result.rows as PMSSubtask[] || [];
     console.log(`📊 PMS subtasks returned: ${subtasks.length} subtasks`);
     if (subtasks.length > 0) {
-      console.log("📋 First subtask sample:", subtasks[0]);
-      console.log("📋 Available columns:", Object.keys(subtasks[0]));
+      console.log("📋 First subtask sample:", JSON.stringify(subtasks[0], null, 2));
       // Filter by taskId using various possible column names
       if (taskId) {
         console.log(`🔍 Filtering subtasks for taskId: ${taskId}`);
         subtasks = subtasks.filter(subtask => {
-          const matches = subtask.task_id == taskId || subtask.taskid == taskId || subtask.task == taskId ||
-                         subtask.parent_task_id == taskId || subtask.parent_task == taskId || subtask.task_ref == taskId ||
-                         subtask.taskId == taskId;
+          const matches = subtask.task_id == taskId || (subtask as any).taskid == taskId || (subtask as any).task == taskId ||
+                         (subtask as any).parent_task_id == taskId || (subtask as any).parent_task == taskId || (subtask as any).task_ref == taskId ||
+                         (subtask as any).taskId == taskId;
           if (matches) {
             console.log(`✅ Found matching subtask:`, subtask);
           }
           return matches;
         });
         console.log(`📊 Filtered to ${subtasks.length} subtasks for task ${taskId}`);
-      }    } else {
+      }
+    } else {
       console.log("⚠️ No subtasks found in PMS database");
     }
 

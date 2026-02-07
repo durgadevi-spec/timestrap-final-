@@ -409,32 +409,9 @@ export async function registerRoutes(
       const entry = await storage.createTimeEntry(result.data);
       broadcast("time_entry_created", entry);
 
-      // Send email notification when timesheet is created
-      try {
-        const { sendTimesheetSubmittedEmail } = await import('./email');
-        await sendTimesheetSubmittedEmail({
-          employeeId: entry.employeeId,
-          employeeName: entry.employeeName,
-          employeeCode: entry.employeeCode,
-          date: entry.date,
-          projectName: entry.projectName,
-          taskDescription: entry.taskDescription,
-          problemAndIssues: entry.problemAndIssues || undefined,
-          quantify: entry.quantify,
-          achievements: entry.achievements || undefined,
-          scopeOfImprovements: entry.scopeOfImprovements || undefined,
-          toolsUsed: entry.toolsUsed || undefined,
-          startTime: entry.startTime,
-          endTime: entry.endTime,
-          totalHours: entry.totalHours,
-          percentageComplete: entry.percentageComplete ?? 0,
-          status: entry.status || 'pending',
-          submittedAt: entry.submittedAt.toISOString(),
-        });
-        console.log('[EMAIL] Timesheet email sent successfully on creation');
-      } catch (emailError) {
-        console.error('[EMAIL] Failed to send email on creation:', emailError);
-      }
+      // NOTE: Email notifications are now sent per day (not per task) via /api/time-entries/submit-daily
+      // This prevents multiple emails for multiple tasks submitted on the same day
+      console.log('[EMAIL] Task created - email will be sent with daily digest endpoint');
 
       res.status(201).json(entry);
     } catch (error) {
@@ -486,6 +463,79 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Delete time entry error:", error);
       res.status(500).json({ error: "Failed to delete time entry" });
+    }
+  });
+
+  // Submit daily tasks summary email
+  app.post("/api/time-entries/submit-daily/:employeeId/:date", async (req, res) => {
+    try {
+      const { employeeId, date } = req.params;
+      
+      // Get all time entries for the employee on that date
+      const allEntries = await storage.getTimeEntriesByEmployee(employeeId);
+      const dailyEntries = allEntries.filter(entry => entry.date === date);
+
+      if (dailyEntries.length === 0) {
+        return res.status(404).json({ error: "No tasks found for this date" });
+      }
+
+      // Get employee info
+      const employee = await storage.getEmployee(employeeId);
+      if (!employee) {
+        return res.status(404).json({ error: "Employee not found" });
+      }
+
+      // Calculate total hours for the day
+      const totalHours = dailyEntries.reduce((sum, entry) => {
+        const hours = parseFloat(entry.totalHours);
+        return sum + (isNaN(hours) ? 0 : hours);
+      }, 0);
+
+      // Prepare task data for email
+      const tasks = dailyEntries.map(entry => ({
+        projectName: entry.projectName,
+        taskDescription: entry.taskDescription,
+        problemAndIssues: entry.problemAndIssues || undefined,
+        quantify: entry.quantify,
+        achievements: entry.achievements || undefined,
+        scopeOfImprovements: entry.scopeOfImprovements || undefined,
+        toolsUsed: entry.toolsUsed || undefined,
+        startTime: entry.startTime,
+        endTime: entry.endTime,
+        totalHours: entry.totalHours,
+        percentageComplete: entry.percentageComplete ?? 0,
+      }));
+
+      // Send daily summary email
+      const { sendDailyTasksSummaryEmail } = await import('./email');
+      const emailResult = await sendDailyTasksSummaryEmail({
+        employeeId: employee.id,
+        employeeName: employee.name,
+        employeeCode: employee.code,
+        date: date,
+        tasks: tasks,
+        totalHoursForDay: totalHours.toFixed(2),
+        submittedAt: new Date().toISOString(),
+      });
+
+      if (!emailResult.success) {
+        return res.status(500).json({ 
+          error: "Failed to send daily summary email",
+          details: emailResult.error 
+        });
+      }
+
+      console.log(`[DAILY SUBMIT] Daily summary sent for ${employee.name} on ${date}`);
+      res.json({
+        success: true,
+        message: `Daily summary email sent for ${date} with ${dailyEntries.length} tasks`,
+        taskCount: dailyEntries.length,
+        totalHours: totalHours.toFixed(2),
+        emailId: emailResult.result?.id,
+      });
+    } catch (error) {
+      console.error("Submit daily summary error:", error);
+      res.status(500).json({ error: "Failed to submit daily summary" });
     }
   });
 

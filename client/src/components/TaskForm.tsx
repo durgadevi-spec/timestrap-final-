@@ -550,7 +550,7 @@ export default function TaskForm({ task, onSave, onCancel, user }: TaskFormProps
                   ).map(tool => (
                     <CommandItem
                       key={tool}
-                      onSelect={() => toggleTool(tool)}
+                      onSelect={() => { toggleTool(tool); setToolSearch(''); }}
                       className={`cursor-pointer ${
                         formData.toolsUsed.includes(tool)
                           ? 'bg-blue-500/20 text-blue-300'
