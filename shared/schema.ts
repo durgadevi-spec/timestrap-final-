@@ -190,6 +190,7 @@ export const timeEntries = pgTable("time_entries", {
   endTime: text("end_time").notNull(),
   totalHours: text("total_hours").notNull(),
   percentageComplete: integer("percentage_complete").default(0),
+  pmsId: text("pms_id"),
   status: text("status").default("pending"),
   approvedBy: varchar("approved_by"),
   approvedAt: timestamp("approved_at"),

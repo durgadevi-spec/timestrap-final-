@@ -6,6 +6,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { pool } from './db';
+import { pmsPool } from './pmsSupabase';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -144,7 +145,7 @@ export async function registerRoutes(
       console.error("Delete organisation error:", error);
       res.status(500).json({ error: "Failed to delete organisation" });
     }
-  });
+  });    
 
   // ============ DEPARTMENT ROUTES ============
   app.get("/api/departments", async (req, res) => {
@@ -247,7 +248,7 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Delete group error:", error);
       res.status(500).json({ error: "Failed to delete group" });
-    }
+    }      
   });
 
   // ============ EMPLOYEE ROUTES ============
@@ -284,7 +285,7 @@ export async function registerRoutes(
       console.error("Create employee error:", error);
       res.status(500).json({ error: "Failed to create employee" });
     }
-  });
+  });              
 
   // ============ MANAGER ROUTES ============
   app.get("/api/managers", async (req, res) => {
@@ -370,6 +371,29 @@ export async function registerRoutes(
     }
   });
 
+  // ============ KEY STEPS ROUTE (PMS) ============
+  app.get('/api/key-steps', async (req, res) => {
+    try {
+      const { projectId } = req.query;
+      if (!projectId) return res.json([]);
+
+      // Query PMS DB for key steps tied to the project code
+      const query = `
+        SELECT ks.id, ks.title AS name
+        FROM key_steps ks
+        INNER JOIN projects p ON ks.project_id = p.id
+        WHERE p.project_code = $1
+        ORDER BY ks.title
+      `;
+      const result = await pmsPool.query(query, [projectId]);
+      const rows = result && result.rows ? result.rows : [];
+      res.json(rows);
+    } catch (error) {
+      console.error('Get key steps error:', error);
+      res.status(500).json([]);
+    }
+  });
+
   // ============ TIME ENTRY ROUTES ============
   app.get("/api/time-entries", async (req, res) => {
     try {
@@ -431,6 +455,53 @@ export async function registerRoutes(
 
       const entry = await storage.createTimeEntry(result.data);
       broadcast("time_entry_created", entry);
+
+      // ============ PMS SYNC ============
+      // If this entry is linked to a PMS task, update progress/status in PMS
+      if (entry.pmsId && entry.percentageComplete !== null) {
+        try {
+          const { updateProjectProgress, updateTaskInPMS, getProjects } = await import('./pmsSupabase');
+
+          console.log(`🔄 Syncing PMS for task ${entry.pmsId}, progress: ${entry.percentageComplete}%`);
+
+          // 1. Update Task Status if 100%
+          if (entry.percentageComplete === 100) {
+            await updateTaskInPMS(entry.pmsId, { status: 'Completed', end_date: entry.date });
+            console.log(`✅ PMS Task ${entry.pmsId} marked as Completed`);
+          }
+
+          // 2. Update Project Progress
+          // We need to find the project first to get its ID/Code. 
+          // storage.createTimeEntry saves `projectName`. We'll try to match it.
+          // Note: This matches by name. Ideally we'd store project_code in time_entries too, 
+          // but for now relying on name match or if we had pmsProjectId.
+          // Let's try to fetch project by name if we can, or just update if we have the code.
+          // Since we don't have project_code in entry, we search.
+
+          // Optimization: If the frontend passed pmsProjectId (not in schema yet), we could use it.
+          // For now, let's look up the project by name.
+          // We can reuse getProjects but that might be heavy. 
+          // Let's just try to update by matching title in the update query (updateProjectProgress supports project_code or id, let's assume valid UUID or Code).
+          // Actually updateProjectProgress query is: WHERE id::text = $2 OR project_code = $2
+          // Using projectName there won't work if it's a name.
+
+          // Let's resolve project_code from name
+          const pmsProjects = await getProjects();
+          const matchedProject = pmsProjects.find(p => p.project_name === entry.projectName);
+
+          if (matchedProject) {
+            await updateProjectProgress(matchedProject.id, entry.percentageComplete);
+            console.log(`✅ PMS Project ${matchedProject.project_name} progress updated to ${entry.percentageComplete}%`);
+          } else {
+            console.warn(`⚠️ Could not find PMS project matching "${entry.projectName}" to update progress.`);
+          }
+
+        } catch (pmsError) {
+          console.error("❌ Failed to sync with PMS:", pmsError);
+          // Don't fail the request, just log
+        }
+      }
+      // ==================================
 
       // NOTE: Email notifications are now sent per day (not per task) via /api/time-entries/submit-daily
       // This prevents multiple emails for multiple tasks submitted on the same day
@@ -494,57 +565,39 @@ export async function registerRoutes(
     try {
       const { employeeId, date } = req.params;
 
-      // Get all time entries for the employee on that date
-      const allEntries = await storage.getTimeEntriesByEmployee(employeeId);
-      const dailyEntries = allEntries.filter(entry => entry.date === date);
-
+      // fetch every entry for the user on the requested date
+      const dailyEntries = await storage.getTimeEntriesByEmployeeAndDate(employeeId, date);
       if (dailyEntries.length === 0) {
         return res.status(404).json({ error: "No tasks found for this date" });
       }
 
-      // Get employee info
       const employee = await storage.getEmployee(employeeId);
       if (!employee) {
         return res.status(404).json({ error: "Employee not found" });
       }
 
-      // Calculate total hours for the day
       const totalHours = dailyEntries.reduce((sum, entry) => {
         const hours = parseFloat(entry.totalHours);
         return sum + (isNaN(hours) ? 0 : hours);
       }, 0);
 
-      // Prepare task data for email
-      const tasks = dailyEntries.map(entry => ({
-        projectName: entry.projectName,
-        taskDescription: entry.taskDescription,
-        problemAndIssues: entry.problemAndIssues || undefined,
-        quantify: entry.quantify,
-        achievements: entry.achievements || undefined,
-        scopeOfImprovements: entry.scopeOfImprovements || undefined,
-        toolsUsed: entry.toolsUsed || undefined,
-        startTime: entry.startTime,
-        endTime: entry.endTime,
-        totalHours: entry.totalHours,
-        percentageComplete: entry.percentageComplete ?? 0,
-      }));
-
-      // Send daily summary email
-      const { sendDailyTasksSummaryEmail } = await import('./email');
-      const emailResult = await sendDailyTasksSummaryEmail({
+      // use the raw entries as tasks so the email helper has full data
+      const tasks = dailyEntries;
+      const { sendTimesheetSummaryEmail } = await import('./email');
+      const emailResult = await sendTimesheetSummaryEmail({
         employeeId: employee.id,
         employeeName: employee.name,
-        employeeCode: employee.code,
-        date: date,
-        tasks: tasks,
-        totalHoursForDay: totalHours.toFixed(2),
-        submittedAt: new Date().toISOString(),
+        employeeCode: employee.employeeCode,
+        date,
+        totalHours: totalHours.toFixed(2),
+        tasks,
+        status: 'pending',
       });
 
       if (!emailResult.success) {
         return res.status(500).json({
           error: "Failed to send daily summary email",
-          details: emailResult.error
+          details: emailResult.error,
         });
       }
 
@@ -572,19 +625,27 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Time entry not found" });
       }
 
-      // Send email notification
-      try {
-        const { sendApprovalEmail } = await import('./email');
+      // if every task for that day has been manager_approved, send one summary to employee
+      const allTasks = await storage.getTimeEntriesByEmployeeAndDate(entry.employeeId, entry.date);
+      const allHRApproved = allTasks.every(t => t.status === 'manager_approved');
+      if (allHRApproved) {
+        const employee = await storage.getEmployee(entry.employeeId);
         const approver = await storage.getEmployee(approvedBy);
-        await sendApprovalEmail({
-          employeeName: entry.employeeName,
-          employeeCode: entry.employeeCode,
-          date: entry.date,
-          status: 'manager_approved',
-          approverName: approver?.name,
-        });
-      } catch (emailError) {
-        console.error('[EMAIL] Failed to send manager approval email:', emailError);
+        try {
+          const { sendApprovalSummaryEmail } = await import('./email');
+          await sendApprovalSummaryEmail({
+            employeeId: entry.employeeId,
+            employeeName: entry.employeeName,
+            employeeCode: entry.employeeCode,
+            date: entry.date,
+            tasks: allTasks,
+            status: 'manager_approved',
+            recipients: employee?.email ? [employee.email] : undefined,
+            approverName: approver?.name,
+          });
+        } catch (emailError) {
+          console.error('[EMAIL] Failed to send grouped HR approval email:', emailError);
+        }
       }
 
       broadcast("time_entry_updated", entry);
@@ -605,19 +666,30 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Time entry not found" });
       }
 
-      // Send email notification
-      try {
-        const { sendApprovalEmail } = await import('./email');
+      // check if full day is now finally approved
+      const allTasks = await storage.getTimeEntriesByEmployeeAndDate(entry.employeeId, entry.date);
+      const allApproved = allTasks.every(t => t.status === 'approved');
+      if (allApproved) {
+        const employee = await storage.getEmployee(entry.employeeId);
         const approver = await storage.getEmployee(approvedBy);
-        await sendApprovalEmail({
-          employeeName: entry.employeeName,
-          employeeCode: entry.employeeCode,
-          date: entry.date,
-          status: 'approved',
-          approverName: approver?.name,
-        });
-      } catch (emailError) {
-        console.error('[EMAIL] Failed to send admin approval email:', emailError);
+        try {
+          const { sendApprovalSummaryEmail } = await import('./email');
+          // build recipient list: default + employee
+          const defaultRecipients = (process.env.SENDER_EMAIL || "").split(",").map(e => e.trim()).filter(Boolean);
+          const recipients = employee?.email ? [...defaultRecipients, employee.email] : defaultRecipients;
+          await sendApprovalSummaryEmail({
+            employeeId: entry.employeeId,
+            employeeName: entry.employeeName,
+            employeeCode: entry.employeeCode,
+            date: entry.date,
+            tasks: allTasks,
+            status: 'approved',
+            recipients,
+            approverName: approver?.name,
+          });
+        } catch (emailError) {
+          console.error('[EMAIL] Failed to send grouped final approval email:', emailError);
+        }
       }
 
       broadcast("time_entry_updated", entry);
@@ -637,20 +709,28 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Time entry not found" });
       }
 
-      // Send email notification
+      // after updating, collect all rejected tasks for the same date
+      const allTasks = await storage.getTimeEntriesByEmployeeAndDate(entry.employeeId, entry.date);
+      const rejectedTasks = allTasks.filter(t => t.status === 'rejected');
+
+      const employee = await storage.getEmployee(entry.employeeId);
+      const approver = await storage.getEmployee(approvedBy);
+
       try {
-        const { sendApprovalEmail } = await import('./email');
-        const approver = await storage.getEmployee(approvedBy);
-        await sendApprovalEmail({
+        const { sendApprovalSummaryEmail } = await import('./email');
+        await sendApprovalSummaryEmail({
+          employeeId: entry.employeeId,
           employeeName: entry.employeeName,
           employeeCode: entry.employeeCode,
           date: entry.date,
+          tasks: rejectedTasks,
           status: 'rejected',
+          recipients: employee?.email ? [employee.email] : undefined,
           approverName: approver?.name,
           rejectionReason: reason,
         });
       } catch (emailError) {
-        console.error('[EMAIL] Failed to send rejection email:', emailError);
+        console.error('[EMAIL] Failed to send grouped rejection email:', emailError);
       }
 
       broadcast("time_entry_updated", entry);
@@ -664,72 +744,39 @@ export async function registerRoutes(
   // ============ NOTIFICATION ROUTES ============
   app.post("/api/notifications/timesheet-submitted", async (req, res) => {
     try {
-      const {
-        employeeId,
-        employeeName,
-        employeeCode,
-        date,
-        projectName,
-        taskDescription,
-        problemAndIssues,
-        quantify,
-        achievements,
-        scopeOfImprovements,
-        toolsUsed,
-        startTime,
-        endTime,
-        totalHours,
-        percentageComplete,
-        status,
-        submittedAt,
-      } = req.body;
+      const { employeeId, employeeName, employeeCode, date } = req.body;
 
-      console.log(`[NOTIFICATION] Timesheet submitted by ${employeeName} (${employeeCode})`);
-      console.log(`  Date: ${date}, Total Hours: ${totalHours}`);
-      console.log(`  Recipients: pushpa.p@ctint.in, sp@ctint.in`);
+      console.log(`[NOTIFICATION] grouping submission for ${employeeName} (${employeeCode}) on ${date}`);
 
-      // Send email notification via Resend
+      const allTasks = await storage.getTimeEntriesByEmployeeAndDate(employeeId, date);
+      console.log(`[NOTIFICATION] fetched ${allTasks.length} tasks from database`);
+      if (allTasks.length === 0) {
+        console.warn(`[NOTIFICATION] no tasks found for ${employeeId} on ${date}`);
+        return res.status(404).json({ error: "No tasks found for that date" });
+      }
+
+      const totalHours = allTasks.reduce((acc, t) => acc + parseFloat(t.totalHours || "0"), 0).toFixed(2);
+
       try {
-        const { sendTimesheetSubmittedEmail } = await import('./email');
-        await sendTimesheetSubmittedEmail({
+        const { sendTimesheetSummaryEmail } = await import('./email');
+        const emailResult = await sendTimesheetSummaryEmail({
           employeeId,
           employeeName,
           employeeCode,
           date,
-          projectName,
-          taskDescription,
-          problemAndIssues,
-          quantify,
-          achievements,
-          scopeOfImprovements,
-          toolsUsed,
-          startTime,
-          endTime,
           totalHours,
-          percentageComplete,
-          status,
-          submittedAt,
+          tasks: allTasks,
+          status: 'pending',
         });
-        console.log('[EMAIL] Timesheet notification email sent successfully');
+        console.log('[EMAIL] Grouped submission email sent, result:', emailResult);
       } catch (emailError) {
-        console.error('[EMAIL] Failed to send email:', emailError);
+        console.error('[EMAIL] Failed to send grouped summary:', emailError);
       }
 
-      // Broadcast to connected managers for real-time notification
-      broadcast("timesheet_submitted", {
-        employeeName,
-        employeeCode,
-        date,
-        projectName,
-        totalHours,
-        submittedAt: new Date().toISOString(),
-      });
+      // notify front end if needed
+      broadcast("timesheet_submitted", { employeeName, employeeCode, date, totalHours });
 
-      res.json({
-        success: true,
-        message: "Notification sent to managers",
-        recipients: process.env.SENDER_EMAIL || "Not configured"
-      });
+      res.json({ success: true, taskCount: allTasks.length, totalHours });
     } catch (error) {
       console.error("Notification error:", error);
       res.status(500).json({ error: "Failed to send notification" });
@@ -848,8 +895,9 @@ export async function registerRoutes(
           }
 
           // Include task as pending if its deadline matches target and it's not completed.
-          // Whether unassigned project tasks are considered blocking is configurable.
-          const shouldInclude = taskKey && taskKey === targetKey && notCompleted && (isAssigned || includeProjectTasks);
+          // Previously we filtered by assignment/settings; to ensure users cannot submit when any
+          // task is due today, ignore those criteria here.
+          const shouldInclude = taskKey && taskKey === targetKey && notCompleted;
           if (shouldInclude) {
             pending.push({
               ...t,
@@ -868,8 +916,8 @@ export async function registerRoutes(
               console.log('[PENDING-CHECK] Excluded (no deadline):', t.id);
             } else if (taskKey !== targetKey) {
               console.log('[PENDING-CHECK] Excluded (date mismatch):', t.id, 'taskKey=', taskKey, 'targetKey=', targetKey);
-            } else if (!isAssigned) {
-              console.log('[PENDING-CHECK] Excluded (not assigned to employee):', t.id, 'assignee=', assignedTo, 'members=', members);
+            } else {
+              console.log('[PENDING-CHECK] Excluded (other):', t.id);
             }
           }
         }
@@ -938,20 +986,31 @@ export async function registerRoutes(
           if (actor?.email) recipientEmails.push(actor.email);
         }
 
-        const uniqueRecipients = [...new Set(recipientEmails)];
+        const uniqueRecipients = Array.from(new Set(recipientEmails));
 
         if (uniqueRecipients.length > 0) {
-          await apiRequest('POST', '/api/notifications/general', {
-            subject: `Task Deadline Extended: Task ${taskId}`,
-            message: `
-               Task ID: ${taskId}
-               Postponed By: ${postponedBy}
-               Reason: ${reason}
-               New Due Date: ${newDueDate}
-               Previous Due Date: ${previousDueDate || 'N/A'}
-             `,
-            recipients: uniqueRecipients
-          });
+          // Send email directly using the internal helper or just log if not available
+          // Since this is server-side, we should use the email module, not apiRequest (which is client-side)
+          try {
+            // We can't use apiRequest here. It's likely a mistake in the previous code copy-paste.
+            // We should import sendEmail from ./email or similar if available.
+            // For now, let's just log it as the email implementation seems to be imported dynamically elsewhere.
+            const { sendEmail } = await import('./email');
+            await sendEmail({
+              to: uniqueRecipients,
+              subject: `Task Deadline Extended: Task ${taskId}`,
+              html: `
+                 <h3>Task Deadline Extended</h3>
+                 <p><strong>Task ID:</strong> ${taskId}</p>
+                 <p><strong>Postponed By:</strong> ${postponedBy}</p>
+                 <p><strong>Reason:</strong> ${reason}</p>
+                 <p><strong>New Due Date:</strong> ${newDueDate}</p>
+                 <p><strong>Previous Due Date:</strong> ${previousDueDate || 'N/A'}</p>
+               `
+            });
+          } catch (e) {
+            console.error("Failed to send extension email:", e);
+          }
           console.log(`[EMAIL] Postponement notification sent to ${uniqueRecipients.length} recipients`);
         }
       } catch (notifyErr) {

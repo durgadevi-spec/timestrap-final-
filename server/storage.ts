@@ -1,4 +1,4 @@
-import { db } from "./db";
+import { db, pool } from "./db";
 import { eq, desc, and } from "drizzle-orm";
 import {
   organisations,
@@ -38,7 +38,7 @@ export interface IStorage {
   updateOrganisation(id: string, org: Partial<InsertOrganisation>): Promise<Organisation | undefined>;
   deleteOrganisation(id: string): Promise<boolean>;
 
-  // Departments
+  // Departments  
   getDepartments(): Promise<Department[]>;
   getDepartment(id: string): Promise<Department | undefined>;
   createDepartment(dept: InsertDepartment): Promise<Department>;
@@ -67,7 +67,7 @@ export interface IStorage {
   updateTask(id: string, task: Partial<any>): Promise<Task | undefined>;
   deleteTask(id: string): Promise<boolean>;
 
-  // Subtasks
+  // Subtasks   
   getSubtasks(): Promise<Subtask[]>;
   getSubtask(id: string): Promise<Subtask | undefined>;
   getSubtasksByTask(taskId: string): Promise<Subtask[]>;
@@ -87,6 +87,8 @@ export interface IStorage {
   getTimeEntries(): Promise<TimeEntry[]>;
   getTimeEntry(id: string): Promise<TimeEntry | undefined>;
   getTimeEntriesByEmployee(employeeId: string): Promise<TimeEntry[]>;
+  // Added for grouped daily email summaries
+  getTimeEntriesByEmployeeAndDate(employeeId: string, date: string): Promise<TimeEntry[]>;
   getPendingTimeEntries(): Promise<TimeEntry[]>;
   createTimeEntry(entry: InsertTimeEntry): Promise<TimeEntry>;
   updateTimeEntry(id: string, data: Partial<InsertTimeEntry>): Promise<TimeEntry | undefined>;
@@ -100,7 +102,7 @@ export interface IStorage {
   createManager(manager: InsertManager): Promise<Manager>;
   seedManagers(): Promise<void>;
   seedDefaultEmployees(): Promise<void>;
-}
+}  
 
 export class DatabaseStorage implements IStorage {
   // Organisations
@@ -110,7 +112,7 @@ export class DatabaseStorage implements IStorage {
 
   async getOrganisation(id: string): Promise<Organisation | undefined> {
     const [org] = await db.select().from(organisations).where(eq(organisations.id, id));
-    return org;
+    return org;   
   }
 
   async createOrganisation(org: InsertOrganisation): Promise<Organisation> {
@@ -152,7 +154,7 @@ export class DatabaseStorage implements IStorage {
     await db.delete(departments).where(eq(departments.id, id));
     return true;
   }
-
+     
   // Groups
   async getGroups(): Promise<Group[]> {
     return await db.select().from(groups).orderBy(desc(groups.createdAt));
@@ -161,7 +163,7 @@ export class DatabaseStorage implements IStorage {
   async getGroup(id: string): Promise<Group | undefined> {
     const [group] = await db.select().from(groups).where(eq(groups.id, id));
     return group;
-  }
+  }  
 
   async createGroup(group: InsertGroup): Promise<Group> {
     const [newGroup] = await db.insert(groups).values(group).returning();
@@ -187,7 +189,7 @@ export class DatabaseStorage implements IStorage {
         project_code: pmsProject.project_code,
         project_name: pmsProject.project_name,
         description: pmsProject.description || null,
-        status: pmsProject.status || null,
+        status: pmsProject.status || null,  
         start_date: pmsProject.start_date || null,
         end_date: pmsProject.end_date || null,
       }));
@@ -207,7 +209,7 @@ export class DatabaseStorage implements IStorage {
     const [newProject] = await db.insert(projects).values(project).returning();
     return newProject;
   }
-
+         
   async updateProject(id: string, project: Partial<any>): Promise<Project | undefined> {
     const [updatedProject] = await db.update(projects).set(project).where(eq(projects.project_code, id)).returning();
     return updatedProject;
@@ -258,7 +260,7 @@ export class DatabaseStorage implements IStorage {
     const result = await db.delete(tasks).where(eq(tasks.id, id));
     return (result.rowCount ?? 0) > 0;
   }
-
+  m
   async getTasksByProject(projectCode: string, userDepartment?: string): Promise<Task[]> {
     try {
       const pmsTasks = await getPMSTasksByProject(projectCode, userDepartment);
@@ -285,7 +287,7 @@ export class DatabaseStorage implements IStorage {
       return [];
     }
   }
-
+    
   // Subtasks
   async getSubtasks(): Promise<Subtask[]> {
     return await db.select().from(subtasks).orderBy(desc(subtasks.createdAt));
@@ -339,7 +341,7 @@ export class DatabaseStorage implements IStorage {
     }).returning();
     return newEmp;
   }
-
+   
   async validateEmployee(code: string, password: string): Promise<Employee | null> {
     const emp = await this.getEmployeeByCode(code);
     if (!emp) return null;
@@ -350,7 +352,25 @@ export class DatabaseStorage implements IStorage {
 
   // Time Entries
   async getTimeEntries(): Promise<TimeEntry[]> {
-    return await db.select().from(timeEntries).orderBy(desc(timeEntries.submittedAt));
+    try {
+      return await db.select().from(timeEntries).orderBy(desc(timeEntries.submittedAt));
+    } catch (err: any) {
+      console.error("Get time entries error (drizzle):", err);
+      // Fallback: if the pms_id column is missing in the DB, run a raw query excluding it
+      if (err && err.code === "42703" && err.message && err.message.includes("pms_id")) {
+        const result = await pool.query(`
+          SELECT id, employee_id, employee_code, employee_name, date, project_name, task_description,
+                 problem_and_issues, quantify, achievements, scope_of_improvements, tools_used,
+                 start_time, end_time, total_hours, percentage_complete, status,
+                 approved_by, approved_at, manager_approved_by, manager_approved_at,
+                 rejection_reason, approval_comment, submitted_at
+          FROM time_entries
+          ORDER BY submitted_at DESC
+        `);
+        return result.rows as TimeEntry[];
+      }
+      throw err;
+    }
   }
 
   async getTimeEntry(id: string): Promise<TimeEntry | undefined> {
@@ -364,11 +384,23 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(timeEntries.submittedAt));
   }
 
-  async getPendingTimeEntries(): Promise<TimeEntry[]> {
+  // fetch all entries for a specific employee on a given date, ordered by start time
+  async getTimeEntriesByEmployeeAndDate(employeeId: string, date: string): Promise<TimeEntry[]> {
+    return await db.select().from(timeEntries)
+      .where(
+        and(
+          eq(timeEntries.employeeId, employeeId),
+          eq(timeEntries.date, date)
+        )
+      )
+      .orderBy(timeEntries.startTime);
+  }
+
+  async getPendingTimeEntries(): Promise<TimeEntry[]> {                     
     return await db.select().from(timeEntries)
       .where(eq(timeEntries.status, "pending"))
       .orderBy(desc(timeEntries.submittedAt));
-  }
+  }                       
 
   async createTimeEntry(entry: InsertTimeEntry): Promise<TimeEntry> {
     const [existing] = await db.select().from(timeEntries).where(
@@ -403,7 +435,7 @@ export class DatabaseStorage implements IStorage {
   async deleteTimeEntry(id: string): Promise<boolean> {
     await db.delete(timeEntries).where(eq(timeEntries.id, id));
     return true;
-  }
+  }        
 
   async updateTimeEntryStatus(
     id: string,
@@ -417,7 +449,7 @@ export class DatabaseStorage implements IStorage {
         approvedBy,
         approvedAt: new Date(),
         rejectionReason,
-      })
+      })     
       .where(eq(timeEntries.id, id))
       .returning();
     return updated;
@@ -437,10 +469,10 @@ export class DatabaseStorage implements IStorage {
 
   async adminApproveTimeEntry(id: string, adminId: string): Promise<TimeEntry | undefined> {
     const [updated] = await db.update(timeEntries)
-      .set({
+      .set({ 
         status: "approved",
         approvedBy: adminId,
-        approvedAt: new Date(),
+        approvedAt: new Date(),                  
       })
       .where(eq(timeEntries.id, id))
       .returning();
@@ -457,7 +489,7 @@ export class DatabaseStorage implements IStorage {
     return newManager;
   }
 
-  async seedManagers(): Promise<void> {
+  async seedManagers(): Promise<void> {   
     try {
       console.log("🌱 Seeding managers...");
       const existingManagers = await this.getManagers();
@@ -480,7 +512,7 @@ export class DatabaseStorage implements IStorage {
         { name: "Deepak Joshi", employeeCode: "MGR013", email: "deepak@ctint.in", department: "Research" },
         { name: "Kavitha Menon", employeeCode: "MGR014", email: "kavitha@ctint.in", department: "Training" },
         { name: "Suresh Iyer", employeeCode: "MGR015", email: "suresh@ctint.in", department: "Procurement" },
-      ];
+      ];      
 
       for (const manager of managerList) {
         await this.createManager(manager);
@@ -540,7 +572,7 @@ export class DatabaseStorage implements IStorage {
     } catch (error) {
       console.error("Error syncing passwords:", error);
     }
-  }
+  }   
 }
 
 export const storage = new DatabaseStorage();

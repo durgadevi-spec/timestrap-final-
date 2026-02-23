@@ -12,6 +12,7 @@ export const pmsPool = new Pool({
 
 // PMS Project interface matching Supabase schema
 export interface PMSProject {
+  id: string;
   project_code: string;
   project_name: string;
   description?: string;
@@ -21,7 +22,7 @@ export interface PMSProject {
   created_by_emp_code?: string;
   progress_percentage?: number;
   client_name?: string;
-  department?: string; // Legacy single department field
+  department?: string | string[]; // Legacy single department field or new array
   departments?: string[] | string; // New multiple departments field (array or comma-separated string)
   dept?: string; // Alternative department field name
   department_name?: string; // Alternative department field name
@@ -225,7 +226,7 @@ export const getTasks = async (projectId?: string, userDepartment?: string): Pro
 
     const result: QueryResult = await pmsPool.query(query, params);
     let tasks = result.rows as PMSTask[] || [];
-    
+
     console.log(`📊 PMS tasks returned: ${tasks.length} tasks`);
     if (tasks.length > 0) {
       console.log("📋 First task sample:", JSON.stringify(tasks[0], null, 2));
@@ -289,8 +290,8 @@ export const getSubtasks = async (taskId?: string, userDepartment?: string): Pro
         console.log(`🔍 Filtering subtasks for taskId: ${taskId}`);
         subtasks = subtasks.filter(subtask => {
           const matches = subtask.task_id == taskId || (subtask as any).taskid == taskId || (subtask as any).task == taskId ||
-                         (subtask as any).parent_task_id == taskId || (subtask as any).parent_task == taskId || (subtask as any).task_ref == taskId ||
-                         (subtask as any).taskId == taskId;
+            (subtask as any).parent_task_id == taskId || (subtask as any).parent_task == taskId || (subtask as any).task_ref == taskId ||
+            (subtask as any).taskId == taskId;
           if (matches) {
             console.log(`✅ Found matching subtask:`, subtask);
           }
@@ -336,5 +337,27 @@ export const updateTaskInPMS = async (taskId: string, updates: { end_date?: stri
   } catch (error) {
     console.error('Error updating task in PMS:', error);
     return null;
+  }
+};
+
+// Update project progress percentage in PMS
+export const updateProjectProgress = async (projectId: string, progress: number): Promise<boolean> => {
+  try {
+    console.log(`📡 Updating PMS project ${projectId} progress to ${progress}%`);
+    // Supports both UUID and project_code
+    const result = await pmsPool.query(
+      'UPDATE projects SET progress = $1, updated_at = NOW() WHERE id::text = $2 OR project_code = $2',
+      [progress, projectId]
+    );
+    const success = (result.rowCount ?? 0) > 0;
+    if (success) {
+      console.log(`✅ Successfully updated PMS project ${projectId} progress`);
+    } else {
+      console.log(`⚠️ No rows updated for PMS project ${projectId}`);
+    }
+    return success;
+  } catch (error) {
+    console.error('💥 Error updating project progress in PMS:', error);
+    return false;
   }
 };

@@ -323,7 +323,7 @@ export default function ApprovalPage({ user }: { user: User }) {
               onChange={(e) => setSearchQuery(e.target.value)}
               className="pl-9 bg-slate-900/50 border-blue-500/20 text-white h-9"
             />
-          </div>
+          </div>         
 
           <div className="flex gap-2">
             <Select value={statusFilter} onValueChange={setStatusFilter}>
