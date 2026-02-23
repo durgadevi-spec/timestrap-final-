@@ -105,8 +105,20 @@ export default function TrackerPage({ user }: TrackerPageProps) {
 
   // Helper to get storage key for user's pending tasks
   const getPendingTasksKey = (userId: string, date: string) => `pendingTasks_${userId}_${date}`;
+  const getShiftSubmittedKey = (userId: string, date: string) => `shiftSubmitted_${userId}_${date}`;
 
   const storageKey = getPendingTasksKey(user.id, formattedDate);
+  const shiftSubmittedKey = getShiftSubmittedKey(user.id, formattedDate);
+
+  // Initialize shiftSubmitted from localStorage
+  const [shiftSubmitted, setShiftSubmitted] = useState<boolean>(() => {
+    try {
+      const submitted = localStorage.getItem(shiftSubmittedKey);
+      return submitted === 'true';
+    } catch {
+      return false;
+    }
+  });
 
   // Initialize pendingTasks from localStorage
   const [pendingTasks, setPendingTasks] = useState<Task[]>(() => {
@@ -135,11 +147,15 @@ export default function TrackerPage({ user }: TrackerPageProps) {
   const loadTasksForDate = (date: Date) => {
     const dateStr = format(date, 'yyyy-MM-dd');
     const key = getPendingTasksKey(user.id, dateStr);
+    const submittedKey = getShiftSubmittedKey(user.id, dateStr);
     try {
       const stored = localStorage.getItem(key);
       setPendingTasks(stored ? JSON.parse(stored) : []);
+      const submitted = localStorage.getItem(submittedKey);
+      setShiftSubmitted(submitted === 'true');
     } catch {
       setPendingTasks([]);
+      setShiftSubmitted(false);
     }
   };
 
@@ -518,6 +534,11 @@ export default function TrackerPage({ user }: TrackerPageProps) {
   // Update type to include 'acknowledge'
   const [postponeForm, setPostponeForm] = useState<Record<string, { selected: boolean; reason: string; newDate: string; action: 'extend' | 'keep' }>>({});
 
+  // Load tasks when date changes
+  useEffect(() => {
+    loadTasksForDate(selectedDate);
+  }, [selectedDate, user.id]);
+
   const handleFinalSubmit = async () => {
     if (isSubmitting) return;
     setIsSubmitting(true);
@@ -599,6 +620,11 @@ export default function TrackerPage({ user }: TrackerPageProps) {
       // Save submitted tasks for display and show confirmation
       setSubmittedTasks(tasksToSubmit);
       setShowSubmissionConfirm(true);
+
+      // Mark shift as submitted and clear pending tasks
+      localStorage.setItem(shiftSubmittedKey, 'true');
+      setShiftSubmitted(true);
+      updatePendingTasks([]);
 
       toast({
         title: "Timesheet Submitted",
@@ -877,10 +903,15 @@ export default function TrackerPage({ user }: TrackerPageProps) {
             </div>
             <Button
               onClick={handleFinalSubmit}
-              disabled={submitMutation.isPending}
-              className={`bg-yellow-600 hover:bg-yellow-500 ${!canSubmit ? 'opacity-50 cursor-not-allowed' : ''}`}
+              disabled={submitMutation.isPending || shiftSubmitted || !canSubmit}
+              className={`bg-yellow-600 hover:bg-yellow-500 ${(shiftSubmitted || !canSubmit) ? 'opacity-50 cursor-not-allowed' : ''}`}
             >
-              {submitMutation.isPending ? (
+              {shiftSubmitted ? (
+                <>
+                  <CheckCircle className="w-4 h-4 mr-2" />
+                  Already Submitted
+                </>
+              ) : submitMutation.isPending ? (
                 <>
                   <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                   Submitting...
