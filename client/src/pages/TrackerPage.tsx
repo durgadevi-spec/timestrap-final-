@@ -270,13 +270,8 @@ export default function TrackerPage({ user }: TrackerPageProps) {
     },
   });
 
-  const formatDuration = (minutes: number): string => {
-    const hours = Math.floor(minutes / 60);
-    const mins = minutes % 60;
-    return `${hours}h ${mins}m`;
-  };
-
-  const parseDuration = (duration: string): number => {
+  const parseDuration = (duration: string | undefined | null): number => {
+    if (!duration) return 0;
     const match = duration.match(/(\d+)h\s*(\d+)m?/);
     if (match) {
       return parseInt(match[1]) * 60 + parseInt(match[2] || '0');
@@ -285,7 +280,10 @@ export default function TrackerPage({ user }: TrackerPageProps) {
   };
 
   // Parse task description that may contain task and subtask
-  const parseTaskDescription = (taskDesc: string) => {
+  const parseTaskDescription = (taskDesc: string | undefined | null) => {
+    if (!taskDesc) {
+      return { title: 'Untitled Task', subTask: '', description: '' };
+    }
     const parts = taskDesc.split(' | ');
     if (parts.length >= 2) {
       return { title: parts[0], subTask: parts[1], description: parts.slice(2).join(' | ') };
@@ -326,8 +324,8 @@ export default function TrackerPage({ user }: TrackerPageProps) {
   // Apply filters to tasks
   const filteredAllTasks = useMemo(() => {
     return allTasks.filter(task => {
-      const matchesProject = task.project.toLowerCase().includes(projectFilter.toLowerCase());
-      const matchesTask = task.title.toLowerCase().includes(taskFilter.toLowerCase()) ||
+      const matchesProject = (task.project || '').toLowerCase().includes(projectFilter.toLowerCase());
+      const matchesTask = (task.title || '').toLowerCase().includes(taskFilter.toLowerCase()) ||
         (task.description || '').toLowerCase().includes(taskFilter.toLowerCase());
       return matchesProject && matchesTask;
     });
@@ -335,8 +333,8 @@ export default function TrackerPage({ user }: TrackerPageProps) {
 
   const filteredAvailableTasks = useMemo(() => {
     return availableTasks.filter(task => {
-      const matchesProject = task.projectName.toLowerCase().includes(projectFilter.toLowerCase());
-      const matchesTask = task.task_name.toLowerCase().includes(taskFilter.toLowerCase()) ||
+      const matchesProject = (task.projectName || '').toLowerCase().includes(projectFilter.toLowerCase());
+      const matchesTask = (task.task_name || '').toLowerCase().includes(taskFilter.toLowerCase()) ||
         (task.description || '').toLowerCase().includes(taskFilter.toLowerCase());
       return matchesProject && matchesTask;
     });
@@ -345,8 +343,8 @@ export default function TrackerPage({ user }: TrackerPageProps) {
   // Extract unique projects and tasks for dropdowns
   const uniqueProjects = useMemo(() => {
     const projects = new Set<string>();
-    availableTasks.forEach(t => projects.add(t.projectName));
-    allTasks.forEach(t => projects.add(t.project));
+    availableTasks.forEach(t => { if (t.projectName) projects.add(t.projectName); });
+    allTasks.forEach(t => { if (t.project) projects.add(t.project); });
     return Array.from(projects).sort();
   }, [availableTasks, allTasks]);
 
@@ -362,8 +360,8 @@ export default function TrackerPage({ user }: TrackerPageProps) {
       ? allTasks.filter(t => t.project === projectFilter)
       : allTasks;
 
-    pmsSource.forEach(t => tasks.add(t.task_name));
-    trackerSource.forEach(t => tasks.add(t.title));
+    pmsSource.forEach(t => { if (t.task_name) tasks.add(t.task_name); });
+    trackerSource.forEach(t => { if (t.title) tasks.add(t.title); });
 
     return Array.from(tasks).sort();
   }, [availableTasks, allTasks, projectFilter]);
@@ -371,8 +369,8 @@ export default function TrackerPage({ user }: TrackerPageProps) {
   // Update filtering logic to handle 'all'
   const filteredAllTasksDropdown = useMemo(() => {
     return allTasks.filter(task => {
-      const matchesProject = !projectFilter || projectFilter === 'all' || task.project === projectFilter;
-      const matchesTask = !taskFilter || taskFilter === 'all' || task.title === taskFilter;
+      const matchesProject = !projectFilter || projectFilter === 'all' || (task.project || '').toLowerCase() === (projectFilter || '').toLowerCase();
+      const matchesTask = !taskFilter || taskFilter === 'all' || (task.title || '').toLowerCase() === (taskFilter || '').toLowerCase();
 
       // For tracked tasks, compare against today's date (formattedDate)
       let matchesDateRange = true;

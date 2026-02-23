@@ -379,57 +379,168 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getTimeEntriesByEmployee(employeeId: string): Promise<TimeEntry[]> {
-    return await db.select().from(timeEntries)
-      .where(eq(timeEntries.employeeId, employeeId))
-      .orderBy(desc(timeEntries.submittedAt));
+    try {
+      return await db.select().from(timeEntries)
+        .where(eq(timeEntries.employeeId, employeeId))
+        .orderBy(desc(timeEntries.submittedAt));
+    } catch (err: any) {
+      if (err && err.code === "42703" && err.message && err.message.includes("pms_id")) {
+        const result = await pool.query(
+          `SELECT id, employee_id, employee_code, employee_name, date, project_name, task_description,
+                  problem_and_issues, quantify, achievements, scope_of_improvements, tools_used,
+                  start_time, end_time, total_hours, percentage_complete, status,
+                  approved_by, approved_at, manager_approved_by, manager_approved_at,
+                  rejection_reason, approval_comment, submitted_at
+           FROM time_entries
+           WHERE employee_id = $1
+           ORDER BY submitted_at DESC`,
+          [employeeId]
+        );
+        return result.rows as TimeEntry[];
+      }
+      throw err;
+    }
   }
 
   // fetch all entries for a specific employee on a given date, ordered by start time
   async getTimeEntriesByEmployeeAndDate(employeeId: string, date: string): Promise<TimeEntry[]> {
-    return await db.select().from(timeEntries)
-      .where(
-        and(
-          eq(timeEntries.employeeId, employeeId),
-          eq(timeEntries.date, date)
+    try {
+      return await db.select().from(timeEntries)
+        .where(
+          and(
+            eq(timeEntries.employeeId, employeeId),
+            eq(timeEntries.date, date)
+          )
         )
-      )
-      .orderBy(timeEntries.startTime);
+        .orderBy(timeEntries.startTime);
+    } catch (err: any) {
+      if (err && err.code === "42703" && err.message && err.message.includes("pms_id")) {
+        const result = await pool.query(
+          `SELECT id, employee_id, employee_code, employee_name, date, project_name, task_description,
+                  problem_and_issues, quantify, achievements, scope_of_improvements, tools_used,
+                  start_time, end_time, total_hours, percentage_complete, status,
+                  approved_by, approved_at, manager_approved_by, manager_approved_at,
+                  rejection_reason, approval_comment, submitted_at
+           FROM time_entries
+           WHERE employee_id = $1 AND date = $2
+           ORDER BY start_time ASC`,
+          [employeeId, date]
+        );
+        return result.rows as TimeEntry[];
+      }
+      throw err;
+    }
   }
 
   async getPendingTimeEntries(): Promise<TimeEntry[]> {                     
-    return await db.select().from(timeEntries)
-      .where(eq(timeEntries.status, "pending"))
-      .orderBy(desc(timeEntries.submittedAt));
+    try {
+      return await db.select().from(timeEntries)
+        .where(eq(timeEntries.status, "pending"))
+        .orderBy(desc(timeEntries.submittedAt));
+    } catch (err: any) {
+      if (err && err.code === "42703" && err.message && err.message.includes("pms_id")) {
+        const result = await pool.query(
+          `SELECT id, employee_id, employee_code, employee_name, date, project_name, task_description,
+                  problem_and_issues, quantify, achievements, scope_of_improvements, tools_used,
+                  start_time, end_time, total_hours, percentage_complete, status,
+                  approved_by, approved_at, manager_approved_by, manager_approved_at,
+                  rejection_reason, approval_comment, submitted_at
+           FROM time_entries
+           WHERE status = 'pending'
+           ORDER BY submitted_at DESC`
+        );
+        return result.rows as TimeEntry[];
+      }
+      throw err;
+    }
   }                       
 
   async createTimeEntry(entry: InsertTimeEntry): Promise<TimeEntry> {
-    const [existing] = await db.select().from(timeEntries).where(
-      and(
-        eq(timeEntries.employeeId, entry.employeeId),
-        eq(timeEntries.date, entry.date),
-        eq(timeEntries.projectName, entry.projectName),
-        eq(timeEntries.taskDescription, entry.taskDescription),
-        eq(timeEntries.startTime, entry.startTime)
-      )
-    ).limit(1);
+    try {
+      const [existing] = await db.select().from(timeEntries).where(
+        and(
+          eq(timeEntries.employeeId, entry.employeeId),
+          eq(timeEntries.date, entry.date),
+          eq(timeEntries.projectName, entry.projectName),
+          eq(timeEntries.taskDescription, entry.taskDescription),
+          eq(timeEntries.startTime, entry.startTime)
+        )
+      ).limit(1);
 
-    if (existing) {
-      return existing;
+      if (existing) {
+        return existing;
+      }
+
+      const [newEntry] = await db.insert(timeEntries).values({
+        ...entry,
+        toolsUsed: entry.toolsUsed || [],
+      }).returning();
+      return newEntry;
+    } catch (err: any) {
+      // If pms_id column doesn't exist, insert via raw SQL without it
+      if (err && err.code === "42703" && err.message && err.message.includes("pms_id")) {
+        console.warn("pms_id column missing; inserting without it via raw SQL");
+        const result = await pool.query(
+          `INSERT INTO time_entries 
+            (id, employee_id, employee_code, employee_name, date, project_name, task_description,
+             problem_and_issues, quantify, achievements, scope_of_improvements, tools_used,
+             start_time, end_time, total_hours, percentage_complete, status,
+             approved_by, approved_at, manager_approved_by, manager_approved_at,
+             rejection_reason, approval_comment, submitted_at)
+           VALUES 
+            ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+           RETURNING *`,
+          [
+            entry.id || crypto.randomUUID?.() || Math.random().toString(36).substr(2, 9),
+            entry.employeeId,
+            entry.employeeCode,
+            entry.employeeName,
+            entry.date,
+            entry.projectName,
+            entry.taskDescription,
+            entry.problemAndIssues || null,
+            entry.quantify || "",
+            entry.achievements || null,
+            entry.scopeOfImprovements || null,
+            entry.toolsUsed || [],
+            entry.startTime,
+            entry.endTime,
+            entry.totalHours,
+            entry.percentageComplete || 0,
+            entry.status || "pending",
+            entry.approvedBy || null,
+            entry.approvedAt || null,
+            entry.managerApprovedBy || null,
+            entry.managerApprovedAt || null,
+            entry.rejectionReason || null,
+            entry.approvalComment || null,
+            new Date(),
+          ]
+        );
+        return result.rows[0] as TimeEntry;
+      }
+      throw err;
     }
-
-    const [newEntry] = await db.insert(timeEntries).values({
-      ...entry,
-      toolsUsed: entry.toolsUsed || [],
-    }).returning();
-    return newEntry;
   }
 
   async updateTimeEntry(id: string, data: Partial<InsertTimeEntry>): Promise<TimeEntry | undefined> {
-    const [updated] = await db.update(timeEntries)
-      .set(data)
-      .where(eq(timeEntries.id, id))
-      .returning();
-    return updated;
+    try {
+      const [updated] = await db.update(timeEntries)
+        .set(data)
+        .where(eq(timeEntries.id, id))
+        .returning();
+      return updated;
+    } catch (err: any) {
+      if (err && err.code === "42703" && err.message && err.message.includes("pms_id")) {
+        const { pmsId, ...safeData } = data as any;
+        const result = await pool.query(
+          `UPDATE time_entries SET ${Object.keys(safeData).map((k, i) => `${k} = $${i + 1}`).join(", ")} WHERE id = $${Object.keys(safeData).length + 1} RETURNING *`,
+          [...Object.values(safeData), id]
+        );
+        return result.rows[0] as TimeEntry | undefined;
+      }
+      throw err;
+    }
   }
 
   async deleteTimeEntry(id: string): Promise<boolean> {
@@ -443,40 +554,73 @@ export class DatabaseStorage implements IStorage {
     approvedBy?: string,
     rejectionReason?: string
   ): Promise<TimeEntry | undefined> {
-    const [updated] = await db.update(timeEntries)
-      .set({
-        status,
-        approvedBy,
-        approvedAt: new Date(),
-        rejectionReason,
-      })     
-      .where(eq(timeEntries.id, id))
-      .returning();
-    return updated;
+    try {
+      const [updated] = await db.update(timeEntries)
+        .set({
+          status,
+          approvedBy,
+          approvedAt: new Date(),
+          rejectionReason,
+        })     
+        .where(eq(timeEntries.id, id))
+        .returning();
+      return updated;
+    } catch (err: any) {
+      if (err && err.code === "42703" && err.message && err.message.includes("pms_id")) {
+        const result = await pool.query(
+          `UPDATE time_entries SET status = $1, approved_by = $2, approved_at = $3, rejection_reason = $4 WHERE id = $5 RETURNING *`,
+          [status, approvedBy || null, new Date(), rejectionReason || null, id]
+        );
+        return result.rows[0] as TimeEntry | undefined;
+      }
+      throw err;
+    }
   }
 
   async managerApproveTimeEntry(id: string, managerId: string): Promise<TimeEntry | undefined> {
-    const [updated] = await db.update(timeEntries)
-      .set({
-        status: "manager_approved",
-        managerApprovedBy: managerId,
-        managerApprovedAt: new Date(),
-      })
-      .where(eq(timeEntries.id, id))
-      .returning();
-    return updated;
+    try {
+      const [updated] = await db.update(timeEntries)
+        .set({
+          status: "manager_approved",
+          managerApprovedBy: managerId,
+          managerApprovedAt: new Date(),
+        })
+        .where(eq(timeEntries.id, id))
+        .returning();
+      return updated;
+    } catch (err: any) {
+      if (err && err.code === "42703" && err.message && err.message.includes("pms_id")) {
+        const result = await pool.query(
+          `UPDATE time_entries SET status = $1, manager_approved_by = $2, manager_approved_at = $3 WHERE id = $4 RETURNING *`,
+          ["manager_approved", managerId, new Date(), id]
+        );
+        return result.rows[0] as TimeEntry | undefined;
+      }
+      throw err;
+    }
   }
 
   async adminApproveTimeEntry(id: string, adminId: string): Promise<TimeEntry | undefined> {
-    const [updated] = await db.update(timeEntries)
-      .set({ 
-        status: "approved",
-        approvedBy: adminId,
-        approvedAt: new Date(),                  
-      })
-      .where(eq(timeEntries.id, id))
-      .returning();
-    return updated;
+    try {
+      const [updated] = await db.update(timeEntries)
+        .set({ 
+          status: "approved",
+          approvedBy: adminId,
+          approvedAt: new Date(),                  
+        })
+        .where(eq(timeEntries.id, id))
+        .returning();
+      return updated;
+    } catch (err: any) {
+      if (err && err.code === "42703" && err.message && err.message.includes("pms_id")) {
+        const result = await pool.query(
+          `UPDATE time_entries SET status = $1, approved_by = $2, approved_at = $3 WHERE id = $4 RETURNING *`,
+          ["approved", adminId, new Date(), id]
+        );
+        return result.rows[0] as TimeEntry | undefined;
+      }
+      throw err;
+    }
   }
 
   // Managers
